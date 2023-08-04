@@ -1,4 +1,12 @@
 /*
+	Author: Dylan Lapham
+	README: Some variable names as well as functions are taken from open-source manner code from the internet. All necessary rights to those code snippets go to 
+	Joe Savage from reinterpretcast.com, published on August 21, 2015.
+	Link: https://www.reinterpretcast.com/writing-a-game-boy-advance-game
+
+	The tutorial from the internet was a tutorial to make a simple PONG game. I took some examples from that and re-did the structs and memory access to make it a 
+	fully 3D environment.
+	
 	Rough memory layout for the GBA:
 	0x00000000 - 0x00003FFF - 16 KB System ROM (executable, but not readable)
 	0x02000000 - 0x02030000 - 256 KB EWRAM (general purpose RAM external to the CPU)
@@ -110,6 +118,91 @@ static inline int clamp(int value, int min, int max)
 int cameraX = 100;
 int cameraY = 50;
 int cameraZ = -10;
+
+void updateInput()
+{
+	// key states represents the state of the various keys in the form of a bit mask.
+	// this is a logical 1 = pressed, 0 = false or not pressed.
+	// REG_KEY_INPUT is the complement in order to achieve this. This is necessary for greater intuitiveness.
+	uint32 key_states = ~REG_KEY_INPUT & KEY_ANY;
+
+	if(key_states & KEY_UP)
+	{
+		// decrementing the z-axis view by a number will simulate the movement 'up'
+		cameraZ -= 2;
+	}
+
+	if(key_states & KEY_DOWN)
+	{
+		cameraZ += 2;
+	}
+
+	if(key_states & KEY_LEFT)
+	{
+		cameraX -= 2;
+	}
+
+	if(key_states & KEY_RIGHT)
+	{
+		cameraX += 2;
+	}
+}
+
+// updating the game logic is a matter of checking the camera's position and clamping it in the bounds necessary. The goal is to ensure we don't move through objects.
+void updateGameLogic()
+{
+	uint32 key_states = REG_KEY_INPUT & KEY_ANY;
+
+	if(key_states & KEY_UP)
+	{
+		cameraZ -= 1;
+		cameraZ = clamp(cameraZ, -100, 100);
+	}
+
+	if(key_states & KEY_DOWN)
+	{
+		cameraZ += 1;
+		cameraZ = clamp(cameraZ, -100, 100);
+	}
+
+	if(key_states & KEY_LEFT)
+	{
+		cameraX += 1;
+	}
+
+	if(key_states & KEY_RIGHT)
+	{
+		cameraX -= 1;
+	}
+}
+
+// responsible for clearing the screen so we can start 'clean' before rendering the next frame. This should be called before rendering.
+// the GBA's screen resolution is 240x160 pixels, and each pixel can have a 15-bit color (RGB555 format), meaning it can represent 32,768 different colors. 
+// the color of each pixel is stored in the Video RAM (VRAM), which is the memory region starting from address 0x06000000.
+// NOTE: this is fairly inefficient as far as clearing the screen goes. There are things to research for more complex 3D enviornments, such as double buffering,
+// adaptive tile refresh, etc. However, this is fine to start.
+void clearScreen()
+{
+	int i;
+	// here, we need a pointer to the VRAM memory region of the GBA.
+	// quick explanation of 'volatile': it tells the compiler that a particular variable may change at any time, without any action being taken by the code the compiler finds 
+	// nearby. It is used in many memory-mapped hardware registers or memory locations that can be changed by the hardware or other devices. The compiler in turn, assumes that
+	// its value can change easily and takes extra precautions to ensure that the variable is read from memory and not cached in registers such that it doesn't optimize
+	// writes or reads which can ruin the behavior.
+	volatile uint16* vram = (volatile uint16*)MEM_VRAM;
+	
+	// black is fine here for now to clear the screen with a color.
+	uint16 clearColor = 0x0000;
+
+	// total pixels = 240 * 160
+	int totalPixels = SCREEN_WIDTH * SCREEN_HEIGHT;
+
+	// set each pixel to the relevant color.
+	for(i = 0; i < totalPixels; i++)
+	{
+		vram[i] = clearColor;
+	}
+}
 
 /*
 	Game loop:
