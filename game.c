@@ -6,7 +6,7 @@
 
 	The tutorial from the internet was a tutorial to make a simple PONG game. I took some examples from that and re-did the structs and memory access to make it a 
 	fully 3D environment.
-	
+
 	Rough memory layout for the GBA:
 	0x00000000 - 0x00003FFF - 16 KB System ROM (executable, but not readable)
 	0x02000000 - 0x02030000 - 256 KB EWRAM (general purpose RAM external to the CPU)
@@ -18,12 +18,22 @@
 	0x08000000 - 0x???????? - Game Pak ROM (0 to 32 MB)
 	0x0E000000 - 0x???????? - Game Pak RAM
 */
+#include <stdio.h>
+#include <math.h>
 
 // to check for status
 typedef enum {
 	false = 0,
 	true = 1
 } bool;
+
+// struct to hold the transformed and projected 2D coordinates of an object.
+typedef struct {
+    int x;
+    int y;
+} TransformedObject;
+
+#define NUM_OBJECTS 1
 
 // GBA screen is a 240x160 (3:2) 15-bit color LCD display. Here we have constants to represent that. 
 #define SCREEN_WIDTH  240
@@ -57,6 +67,13 @@ typedef unsigned char  uint8;
 typedef unsigned short uint16;
 typedef unsigned int   uint32;
 typedef uint16 rgb15;
+
+// forward declarations
+void updateInput();
+void updateGameLogic();
+void clearScreen();
+void renderScene();
+void renderObject(int x, int y);
 
 // object attributes
 typedef struct obj_attrs 
@@ -176,11 +193,13 @@ void updateGameLogic()
 	}
 }
 
-// responsible for clearing the screen so we can start 'clean' before rendering the next frame. This should be called before rendering.
-// the GBA's screen resolution is 240x160 pixels, and each pixel can have a 15-bit color (RGB555 format), meaning it can represent 32,768 different colors. 
-// the color of each pixel is stored in the Video RAM (VRAM), which is the memory region starting from address 0x06000000.
-// NOTE: this is fairly inefficient as far as clearing the screen goes. There are things to research for more complex 3D enviornments, such as double buffering,
-// adaptive tile refresh, etc. However, this is fine to start.
+/* 
+	responsible for clearing the screen so we can start 'clean' before rendering the next frame. This should be called before rendering.
+	the GBA's screen resolution is 240x160 pixels, and each pixel can have a 15-bit color (RGB555 format), meaning it can represent 32,768 different colors. 
+	the color of each pixel is stored in the Video RAM (VRAM), which is the memory region starting from address 0x06000000.
+	NOTE: this is fairly inefficient as far as clearing the screen goes. There are things to research for more complex 3D enviornments, such as double buffering,
+	adaptive tile refresh, etc. However, this is fine to start.
+*/ 
 void clearScreen()
 {
 	int i;
@@ -205,14 +224,118 @@ void clearScreen()
 }
 
 /*
-	Game loop:
+	this is the crux of the program. There is a lot to unpack here in terms of the 'under the hood' explanation. First, some helper functions below:
+	essentially, the goal here is to transform these coordinates relative to the position of the camera and its orientation. This is essentially an illusion, but is necessary
+ 	to acheive the graphics needed with the limitations of the GBA. Here is a helpful summary of the operations themselves.
 
+	Translation: Move the entire 3D world so that the camera is at the origin (0, 0, 0). This step is necessary to simplify subsequent transformations.
+	Rotation: Apply the camera's yaw, pitch, and roll angles to rotate the 3D world around the camera's position at the origin.
+	View Transformation: Move the 3D world back to its original position so that it appears as if the camera is at the specified (x, y, z) position.
+
+	Yaw – rotation along the Z axis
+	Pitch -rotation along the Y axis
+	Roll – rotation along the X axis
+*/
+
+// number of objects.
+TransformedObject objects[1];
+void renderScene()
+{
+	for (int i = 0; i < NUM_OBJECTS; i++) 
+	{
+        renderObject(objects[i].x, objects[i].y);
+    }
+
+}
+
+// rotate Y: yaw.
+void rotateY(float *x, float *z, float yaw)
+{
+	float cosYaw = cosf(yaw);
+	float sinYaw = sinf(yaw);
+	float tempX = *x;
+	*x = tempX * cosYaw - *z * sinYaw;
+	*z = tempX * sinYaw + *z * cosYaw;
+}
+
+// rotate X: pitch.
+void rotateX(float *y, float *z, float pitch)
+{
+	float cosPitch = cosf(pitch);
+	float sinPitch = sinf(pitch);
+	float tempY = *y;
+	*y = tempY * cosPitch - *z * sinPitch;
+	*z = tempY * sinPitch + *z * cosPitch;
+}
+
+// translate, rotate, and transform.
+void cameraTransform(float *x, float *y, float *z, float cameraX, float cameraY, float cameraZ, float yaw, float pitch, float roll) 
+{
+	// translation: move to origin.
+	*x -= cameraX;
+	*y -= cameraY;
+	*z -= cameraZ;
+
+	// rotation: apply yaw, pitch, and roll.
+	rotateY(x, z, yaw);
+	rotateX(y, z, pitch);
+
+	// view transformation: move the 3D world back to its original position so that it appears as if the camera is at the specified (x, y, z) position.
+	*x += cameraX;
+	*y += cameraY;
+	*z += cameraZ;
+}
+
+// 3D -> 2D
+void perspectiveProjection(float *x, float *y, float *z, float cameraX, float cameraY, float cameraZ)
+{
+	// focal length: distance between camera and screen. Room for experimentation.
+	float focalLength = 160.0f;
+
+	// calculating projected x and y coordinates based on focal length, or camera position.
+	*x = cameraX + (*x - cameraX) * focalLength / (*z - cameraZ);
+    *y = cameraY + (*y - cameraY) * focalLength / (*z - cameraZ);
+
+	// in the GBA's coordinate system, the top-left corner is (0,0) in terms of a plane. We need to adjust the y-coordinate accordingly.
+    *y = SCREEN_HEIGHT - *y;
+}
+
+// we can use this to render various objects of different complexities. Starting simple with a rectangle perhaps.
+void renderObject(int x, int y)
+{
+	int dx, dy;
+	// 16 x 16
+	int width = 16; int height = 16;
+
+	// set color: RGB555
+	uint16 color = RGB15(31, 0, 0);
+
+	// we need one more pointer to the VRAM region
+	volatile uint16* vram = (volatile uint16*)MEM_VRAM;
+
+	// draw: the hard way (kind of) this will do for now.
+	for(dy = 0; dy < height; dy++)
+	{
+		for(int dx = 0; dx < width; dx++)
+		{
+			vram[(y + dy) * SCREEN_WIDTH + (x + dx)] = color;
+		}
+	}
+}
+
+int main()
+{
+	// TODO: I want to add an option to stop running of course, say when 'key select' is pressed. I will experiment.
+	bool running = true;
+
+	// game loop:
 	while(running)
 	{
 		updateInput();
 		updateGameLogic();
 		clearScreen();
 		renderScene();
-		updateDisplay();
+		// updateDisplay();
 	}
-*/
+
+}
